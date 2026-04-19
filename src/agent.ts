@@ -3,6 +3,7 @@ import { TavilySearch } from "@langchain/tavily";
 import { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
 import { createDeepAgent } from "deepagents";
+import { listEvents, createEvent, updateEvent, deleteEvent } from "./tools/google_calendar.js";
 
 // ZhipuAI uses an OpenAI-compatible API — map env vars so that
 // internal deepagents middleware (e.g. summarization) also uses ZhipuAI.
@@ -69,16 +70,28 @@ export const model = new ChatOpenAI({
 
 // --- Agent ---
 
-const researchInstructions = `You are an expert researcher. Your job is to conduct thorough research and then write a polished report.
+const systemPrompt = `You are a helpful assistant with research and calendar management capabilities.
 
-You have access to an internet search tool as your primary means of gathering information.
+Current date and time: ${new Date().toISOString()}
+Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}
 
 ## \`internet_search\`
 
-Use this to run an internet search for a given query. You can specify the max number of results to return, the topic, and whether raw content should be included.`;
+Use this to run an internet search for a given query. You can specify the max number of results to return, the topic, and whether raw content should be included.
+
+## Google Calendar Tools
+
+You can manage Google Calendar events using the following tools:
+
+- \`list_events\` — List events from a calendar within an optional time range.
+- \`create_event\` — Create a new event (requires summary, start, and end).
+- \`update_event\` — Update an existing event by its ID. Only provided fields are changed.
+- \`delete_event\` — Delete an event by its ID. This cannot be undone.
+
+All datetime values should be in ISO 8601 format (e.g. "2026-04-20T09:00:00Z"). Use the event ID returned by list_events or create_event when updating or deleting.`;
 
 export const agent = createDeepAgent({
   model,
-  tools: [internetSearch],
-  systemPrompt: researchInstructions,
+  tools: [internetSearch, listEvents, createEvent, updateEvent, deleteEvent],
+  systemPrompt,
 });

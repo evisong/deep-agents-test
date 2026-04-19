@@ -80,7 +80,7 @@ app.get(
       taskQueue.start(30_000, 10 * 60 * 1_000);
 
       // Add a test task
-      taskQueue.add("What is LangGraph?");
+      taskQueue.add("Hello");
 
       // Store unsub for cleanup
       (ws as unknown as Record<string, unknown>).__unsub = unsub;
