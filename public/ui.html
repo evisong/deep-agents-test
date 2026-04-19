@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Deep Research Agent</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; display: flex; flex-direction: column; }
+    header { padding: 20px 24px; border-bottom: 1px solid #222; background: #111; }
+    header h1 { font-size: 20px; font-weight: 600; color: #fff; }
+    .status { font-size: 13px; margin-top: 4px; color: #888; }
+    .status.connected { color: #4caf50; }
+    .status.error { color: #f44336; }
+    main { flex: 1; display: flex; flex-direction: column; max-width: 900px; width: 100%; margin: 0 auto; padding: 24px; }
+    .input-area { display: flex; gap: 8px; margin-bottom: 20px; }
+    .input-area input { flex: 1; padding: 12px 16px; border: 1px solid #333; border-radius: 8px; background: #1a1a1a; color: #e0e0e0; font-size: 15px; outline: none; }
+    .input-area input:focus { border-color: #555; }
+    .input-area button { padding: 12px 24px; border: none; border-radius: 8px; background: #2563eb; color: #fff; font-size: 15px; cursor: pointer; font-weight: 500; }
+    .input-area button:hover { background: #1d4ed8; }
+    .input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #output { flex: 1; overflow-y: auto; white-space: pre-wrap; line-height: 1.7; font-size: 15px; padding: 20px; background: #141414; border-radius: 8px; border: 1px solid #222; }
+    .placeholder { color: #555; font-style: italic; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Deep Research Agent</h1>
+    <div id="status" class="status">Connecting...</div>
+  </header>
+  <main>
+    <div class="input-area">
+      <input id="query" type="text" placeholder="Ask a research question..." autofocus />
+      <button id="send" disabled>Send</button>
+    </div>
+    <div id="output"><span class="placeholder">Waiting for connection...</span></div>
+  </main>
+  <script>
+    const output = document.getElementById('output');
+    const queryInput = document.getElementById('query');
+    const sendBtn = document.getElementById('send');
+    const statusEl = document.getElementById('status');
+    let ws;
+    let running = false;
+
+    function setStatus(text, cls) {
+      statusEl.textContent = text;
+      statusEl.className = 'status' + (cls ? ' ' + cls : '');
+    }
+
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(proto + '//' + location.host + '/messages');
+      ws.onopen = () => {
+        setStatus('Connected', 'connected');
+        sendBtn.disabled = false;
+        output.innerHTML = '<span class="placeholder">Connected. Enter a question to begin research.</span>';
+      };
+      ws.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        if (data.type === 'status') {
+          setStatus(data.text, data.cls || '');
+        } else if (data.type === 'chunk') {
+          const ph = output.querySelector('.placeholder');
+          if (ph) ph.remove();
+          if (data.clear) output.textContent = '';
+          output.textContent += data.text;
+        } else if (data.type === 'result') {
+          output.textContent = data.text;
+          running = false;
+          sendBtn.disabled = false;
+          queryInput.disabled = false;
+          setStatus('Connected', 'connected');
+        } else if (data.type === 'error') {
+          output.textContent += '\n\nError: ' + data.text;
+          running = false;
+          sendBtn.disabled = false;
+          queryInput.disabled = false;
+          setStatus('Error', 'error');
+        }
+      };
+      ws.onclose = () => {
+        setStatus('Disconnected — reconnecting...', 'error');
+        sendBtn.disabled = true;
+        running = false;
+        setTimeout(connect, 3000);
+      };
+      ws.onerror = () => {
+        setStatus('Connection error', 'error');
+      };
+    }
+
+    sendBtn.addEventListener('click', send);
+    queryInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+
+    function send() {
+      const q = queryInput.value.trim();
+      if (!q || running) return;
+      running = true;
+      sendBtn.disabled = true;
+      queryInput.disabled = true;
+      output.textContent = '';
+      ws.send(JSON.stringify({ query: q }));
+    }
+
+    connect();
+  </script>
+</body>
+</html>

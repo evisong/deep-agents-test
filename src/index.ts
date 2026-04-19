@@ -3,6 +3,14 @@ import { TavilySearch } from "@langchain/tavily";
 import { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
 import { createDeepAgent } from "deepagents";
+import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import { createNodeWebSocket } from "@hono/node-ws";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ZhipuAI uses an OpenAI-compatible API — map env vars so that
 // internal deepagents middleware (e.g. summarization) also uses ZhipuAI.
@@ -81,10 +89,79 @@ const agent = createDeepAgent({
   systemPrompt: researchInstructions,
 });
 
-// --- Run ---
+// --- Web Server ---
 
-const result = await agent.invoke({
-  messages: [{ role: "user", content: process.argv[2] || "What is LangGraph?" }],
+const app = new Hono();
+
+app.get("/ui", async (c) => {
+  const html = await readFile(join(__dirname, "..", "public", "ui.html"), "utf-8");
+  return c.html(html);
 });
 
-console.log(result.messages[result.messages.length - 1].content);
+const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+
+app.get(
+  "/messages",
+  upgradeWebSocket((c) => ({
+    onOpen(event, ws) {
+      ws.send(JSON.stringify({ type: "status", text: "Connected. Send a query to begin." }));
+    },
+    onMessage(event, ws) {
+      let data: string;
+      try {
+        const parsed = JSON.parse(event.data as string);
+        data = String(parsed.query);
+      } catch {
+        ws.send(JSON.stringify({ type: "error", text: "Invalid message format." }));
+        return;
+      }
+
+      if (!data.trim()) {
+        ws.send(JSON.stringify({ type: "error", text: "Empty query." }));
+        return;
+      }
+
+      ws.send(
+        JSON.stringify({
+          type: "status",
+          text: "Researching: " + data,
+          cls: "",
+        }),
+      );
+
+      agent
+        .invoke({ messages: [{ role: "user", content: data }] })
+        .then((result) => {
+          const last =
+            result.messages[result.messages.length - 1];
+          const content =
+            typeof last.content === "string"
+              ? last.content
+              : JSON.stringify(last.content, null, 2);
+          ws.send(
+            JSON.stringify({ type: "result", text: content }),
+          );
+        })
+        .catch((err) => {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              text: String(err.message || err),
+            }),
+          );
+        });
+    },
+    onClose() {
+      // connection closed
+    },
+    onError(event) {
+      console.error("WebSocket error:", event);
+    },
+  })),
+);
+
+const server = serve({ fetch: app.fetch, port: 3000 });
+injectWebSocket(server);
+
+console.log("Server running at http://localhost:3000");
+console.log("UI: http://localhost:3000/ui");
