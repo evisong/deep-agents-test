@@ -1,93 +1,13 @@
-import { tool } from "langchain";
-import { TavilySearch } from "@langchain/tavily";
-import { ChatOpenAI } from "@langchain/openai";
-import { z } from "zod";
-import { createDeepAgent } from "deepagents";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { agent } from "./agent.js";
+import { BackgroundTaskQueue } from "./background_tasks.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// ZhipuAI uses an OpenAI-compatible API — map env vars so that
-// internal deepagents middleware (e.g. summarization) also uses ZhipuAI.
-if (process.env.ZAI_API_KEY && !process.env.OPENAI_API_KEY) {
-  process.env.OPENAI_API_KEY = process.env.ZAI_API_KEY;
-  process.env.OPENAI_API_BASE = "https://open.bigmodel.cn/api/paas/v4/";
-}
-
-// --- Search Tool ---
-
-const internetSearch = tool(
-  async ({
-    query,
-    maxResults = 5,
-    topic = "general",
-    includeRawContent = false,
-  }: {
-    query: string;
-    maxResults?: number;
-    topic?: "general" | "news" | "finance";
-    includeRawContent?: boolean;
-  }) => {
-    const tavilySearch = new TavilySearch({
-      maxResults,
-      tavilyApiKey: process.env.TAVILY_API_KEY,
-      includeRawContent,
-      topic,
-    });
-    return await tavilySearch._call({ query });
-  },
-  {
-    name: "internet_search",
-    description: "Run a web search",
-    schema: z.object({
-      query: z.string().describe("The search query"),
-      maxResults: z
-        .number()
-        .optional()
-        .default(5)
-        .describe("Maximum number of results to return"),
-      topic: z
-        .enum(["general", "news", "finance"])
-        .optional()
-        .default("general")
-        .describe("Search topic category"),
-      includeRawContent: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe("Whether to include raw content"),
-    }),
-  },
-);
-
-// --- Agent ---
-
-const researchInstructions = `You are an expert researcher. Your job is to conduct thorough research and then write a polished report.
-
-You have access to an internet search tool as your primary means of gathering information.
-
-## \`internet_search\`
-
-Use this to run an internet search for a given query. You can specify the max number of results to return, the topic, and whether raw content should be included.`;
-
-const model = new ChatOpenAI({
-  model: "glm-5",
-  apiKey: process.env.ZAI_API_KEY,
-  configuration: {
-    baseURL: "https://open.bigmodel.cn/api/paas/v4/",
-  },
-});
-
-const agent = createDeepAgent({
-  model,
-  tools: [internetSearch],
-  systemPrompt: researchInstructions,
-});
 
 // --- Web Server ---
 
@@ -100,11 +20,70 @@ app.get("/ui", async (c) => {
 
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 
+// --- Background task queue (for programmatic use) ---
+export const taskQueue = new BackgroundTaskQueue(agent);
+
+// Console logger (always active)
+taskQueue.onEvent(({ type, task, error }) => {
+  switch (type) {
+    case "queued":
+      console.log(`+ Queued: "${task.query}"`);
+      break;
+    case "running":
+      console.log(`▶ Running: "${task.query}"`);
+      break;
+    case "done":
+      console.log(`✔ Done: "${task.query}"`);
+      break;
+    case "error":
+      console.error(`✘ Error: "${task.query}" — ${error}`);
+      break;
+  }
+});
+
+// --- WebSocket (single client only) ---
+let currentWs: { close(): void } | null = null;
+
 app.get(
   "/messages",
   upgradeWebSocket((c) => ({
     onOpen(event, ws) {
-      ws.send(JSON.stringify({ type: "status", text: "Connected. Send a query to begin." }));
+      // Kick previous client
+      if (currentWs) {
+        try { currentWs.close(); } catch {}
+        taskQueue.stop();
+      }
+      currentWs = ws as unknown as typeof currentWs;
+
+      const send = (obj: Record<string, unknown>) => ws.send(JSON.stringify(obj));
+      send({ type: "status", text: "Connected. Send a query to begin." });
+
+      // Forward queue events to this client
+      const unsub = taskQueue.onEvent(({ type, task, result, error }) => {
+        if (type === "queued") {
+          send({ type: "status", text: `+ ${result}: "${task.query}"` });
+        } else if (type === "running") {
+          send({ type: "status", text: `▶ Running: "${task.query}"` });
+        } else if (type === "done") {
+          if (task.id === 0) {
+            send({ type: "status", text: `⏱ Queue auto-stopped` });
+          } else {
+            send({ type: "result", query: task.query, text: result ?? "" });
+            send({ type: "status", text: `✔ Done: "${task.query}"` });
+          }
+        } else if (type === "error") {
+          send({ type: "error", query: task.query, text: error ?? "Unknown error" });
+        }
+      });
+
+      // Start queue, auto-stop after 10 minutes
+      taskQueue.start(30_000, 10 * 60 * 1_000);
+
+      // Add a test task
+      taskQueue.add("What is LangGraph?");
+
+      // Store unsub for cleanup
+      (ws as unknown as Record<string, unknown>).__unsub = unsub;
     },
     onMessage(event, ws) {
       let data: string;
@@ -121,38 +100,29 @@ app.get(
         return;
       }
 
-      ws.send(
-        JSON.stringify({
-          type: "status",
-          text: "Researching: " + data,
-          cls: "",
-        }),
-      );
+      const q = data.trim();
+      ws.send(JSON.stringify({ type: "status", text: `Researching: "${q}"` }));
 
       agent
-        .invoke({ messages: [{ role: "user", content: data }] })
+        .invoke({ messages: [{ role: "user", content: q }] })
         .then((result) => {
-          const last =
-            result.messages[result.messages.length - 1];
-          const content =
-            typeof last.content === "string"
-              ? last.content
-              : JSON.stringify(last.content, null, 2);
-          ws.send(
-            JSON.stringify({ type: "result", text: content }),
-          );
+          const last = result.messages[result.messages.length - 1];
+          const content = typeof last.content === "string" ? last.content : JSON.stringify(last.content, null, 2);
+          ws.send(JSON.stringify({ type: "result", query: q, text: content }));
         })
         .catch((err) => {
-          ws.send(
-            JSON.stringify({
-              type: "error",
-              text: String(err.message || err),
-            }),
-          );
+          ws.send(JSON.stringify({ type: "error", query: q, text: String(err.message || err) }));
+        })
+        .finally(() => {
+          ws.send(JSON.stringify({ type: "status", text: `✔ Done: "${q}"` }));
         });
     },
-    onClose() {
-      // connection closed
+    onClose(_evt, ws) {
+      if (currentWs === (ws as unknown as typeof currentWs)) {
+        currentWs = null;
+        ((ws as unknown as Record<string, unknown>).__unsub as (() => void) | undefined)?.();
+        taskQueue.stop();
+      }
     },
     onError(event) {
       console.error("WebSocket error:", event);

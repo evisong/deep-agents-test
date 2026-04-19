@@ -21,6 +21,9 @@
     .input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
     #output { flex: 1; overflow-y: auto; white-space: pre-wrap; line-height: 1.7; font-size: 15px; padding: 20px; background: #141414; border-radius: 8px; border: 1px solid #222; }
     .placeholder { color: #555; font-style: italic; }
+    .log-entry { padding: 6px 0; border-bottom: 1px solid #1e1e1e; }
+    .log-entry.result { white-space: pre-wrap; line-height: 1.7; padding: 12px 0; }
+    .log-entry.error { color: #f44336; }
   </style>
 </head>
 <body>
@@ -41,11 +44,20 @@
     const sendBtn = document.getElementById('send');
     const statusEl = document.getElementById('status');
     let ws;
-    let running = false;
 
     function setStatus(text, cls) {
       statusEl.textContent = text;
       statusEl.className = 'status' + (cls ? ' ' + cls : '');
+    }
+
+    function appendLog(text, cls) {
+      const ph = output.querySelector('.placeholder');
+      if (ph) ph.remove();
+      const div = document.createElement('div');
+      div.className = 'log-entry' + (cls ? ' ' + cls : '');
+      div.textContent = text;
+      output.appendChild(div);
+      output.scrollTop = output.scrollHeight;
     }
 
     function connect() {
@@ -60,29 +72,18 @@
         const data = JSON.parse(e.data);
         if (data.type === 'status') {
           setStatus(data.text, data.cls || '');
-        } else if (data.type === 'chunk') {
-          const ph = output.querySelector('.placeholder');
-          if (ph) ph.remove();
-          if (data.clear) output.textContent = '';
-          output.textContent += data.text;
         } else if (data.type === 'result') {
-          output.textContent = data.text;
-          running = false;
-          sendBtn.disabled = false;
-          queryInput.disabled = false;
-          setStatus('Connected', 'connected');
+          appendLog('--- Result for: ' + data.query + ' ---', 'result');
+          appendLog(data.text, 'result');
         } else if (data.type === 'error') {
-          output.textContent += '\n\nError: ' + data.text;
-          running = false;
-          sendBtn.disabled = false;
-          queryInput.disabled = false;
+          const msg = data.query ? 'Error (' + data.query + '): ' + data.text : 'Error: ' + data.text;
+          appendLog(msg, 'error');
           setStatus('Error', 'error');
         }
       };
       ws.onclose = () => {
         setStatus('Disconnected — reconnecting...', 'error');
         sendBtn.disabled = true;
-        running = false;
         setTimeout(connect, 3000);
       };
       ws.onerror = () => {
@@ -95,11 +96,8 @@
 
     function send() {
       const q = queryInput.value.trim();
-      if (!q || running) return;
-      running = true;
-      sendBtn.disabled = true;
-      queryInput.disabled = true;
-      output.textContent = '';
+      if (!q) return;
+      queryInput.value = '';
       ws.send(JSON.stringify({ query: q }));
     }
 
