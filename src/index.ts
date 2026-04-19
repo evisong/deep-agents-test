@@ -104,7 +104,7 @@ app.get(
       }
 
       const q = data.trim();
-      ws.send(JSON.stringify({ type: "status", text: `Researching: "${q}"` }));
+      ws.send(JSON.stringify({ type: "status", text: `Processing: "${q}"` }));
 
       agent
         .invoke(

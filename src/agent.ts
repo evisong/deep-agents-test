@@ -6,10 +6,15 @@ import {
   createDeepAgent,
   CompositeBackend,
   StateBackend,
-  StoreBackend,
+  FilesystemBackend,
 } from "deepagents";
-import { InMemoryStore, MemorySaver } from "@langchain/langgraph";
+import { MemorySaver } from "@langchain/langgraph";
 import { listEvents, createEvent, updateEvent, deleteEvent } from "./tools/google_calendar.js";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, cpSync } from "node:fs";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ZhipuAI uses an OpenAI-compatible API — map env vars so that
 // internal deepagents middleware (e.g. summarization) also uses ZhipuAI.
@@ -96,46 +101,26 @@ You can manage Google Calendar events using the following tools:
 
 All datetime values should be in ISO 8601 format (e.g. "2026-04-20T09:00:00Z"). Use the event ID returned by list_events or create_event when updating or deleting.`;
 
-const store = new InMemoryStore();
+// --- Memory: persist to filesystem ---
+
 export const checkpointer = new MemorySaver();
 
-// Seed initial memory
-const memoryContent = `# Agent Memory
+const memoryDir = join(__dirname, "..", "memories");
+const srcMemoriesDir = join(__dirname, "memories");
 
-## User Preferences
-- Timezone: Asia/Shanghai
-- Language: Respond in the same language as the user's query. Default to Chinese if ambiguous.
-- Calendar events should use Beijing time (UTC+8) unless the user specifies otherwise.
-
-## Calendar Conventions
-- Default event duration: 1 hour unless the user specifies otherwise.
-- Always confirm with the user before deleting an event.
-- When listing events, show upcoming events first.
-`;
-
-await store.batch([
-  {
-    namespace: ["current_user", "memories"],
-    key: "/AGENTS.md",
-    value: {
-      content: memoryContent,
-      mimeType: "text/markdown",
-      created_at: new Date().toISOString(),
-      modified_at: new Date().toISOString(),
-    },
-  },
-]);
+if (!existsSync(memoryDir)) {
+  cpSync(srcMemoriesDir, memoryDir, { recursive: true });
+}
 
 const backend = new CompositeBackend(new StateBackend(), {
-  "/memories/": new StoreBackend({ namespace: ["current_user", "memories"] }),
+  "/memories/": new FilesystemBackend({ rootDir: join(__dirname, "..", "memories"), virtualMode: true }),
 });
 
 export const agent = createDeepAgent({
   model,
   tools: [internetSearch, listEvents, createEvent, updateEvent, deleteEvent],
   systemPrompt,
-  store,
   checkpointer,
   backend,
-  memory: ["/memories/AGENTS.md"],
+  memory: ["/memories/AGENTS.md", "/memories/preferences.md"],
 });
