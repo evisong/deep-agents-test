@@ -18,8 +18,13 @@ export class BackgroundTaskQueue {
   private timer: ReturnType<typeof setInterval> | null = null;
   private autoStopTimer: ReturnType<typeof setTimeout> | null = null;
   private handlers: TaskEventHandler[] = [];
+  private configurable: Record<string, string> = {};
 
-  constructor(private agent: { invoke(args: { messages: Array<{ role: string; content: string }> }): Promise<{ messages: Array<{ content: unknown }> }> }) {}
+  constructor(private agent: { invoke(args: { messages: Array<{ role: string; content: string }> }, options?: { configurable?: Record<string, string> }): Promise<{ messages: Array<{ content: unknown }> }> }) {}
+
+  setConfigurable(configurable: Record<string, string>) {
+    this.configurable = configurable;
+  }
 
   add(query: string): Task {
     const task: Task = { id: this.nextId++, query, status: "queued" };
@@ -47,9 +52,10 @@ export class BackgroundTaskQueue {
     this.emit({ type: "running", task });
 
     try {
-      const result = await this.agent.invoke({
-        messages: [{ role: "user", content: task.query }],
-      });
+      const result = await this.agent.invoke(
+        { messages: [{ role: "user", content: task.query }] },
+        { configurable: this.configurable },
+      );
       const last = result.messages[result.messages.length - 1];
       const content =
         typeof last.content === "string"
@@ -79,6 +85,8 @@ export class BackgroundTaskQueue {
   start(intervalMs = 30_000, autoStopMs?: number) {
     this.stop();
     this.timer = setInterval(() => this.tick(), intervalMs);
+    // Run immediately after 1s so queued tasks don't wait a full interval
+    setTimeout(() => this.tick(), 1_000);
     if (autoStopMs) {
       this.autoStopTimer = setTimeout(() => {
         this.stop();

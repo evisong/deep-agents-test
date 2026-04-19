@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { agent } from "./agent.js";
 import { BackgroundTaskQueue } from "./background_tasks.js";
+import { randomUUID } from "node:crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -43,6 +44,7 @@ taskQueue.onEvent(({ type, task, error }) => {
 
 // --- WebSocket (single client only) ---
 let currentWs: { close(): void } | null = null;
+let currentThreadId: string | null = null;
 
 app.get(
   "/messages",
@@ -54,7 +56,7 @@ app.get(
         taskQueue.stop();
       }
       currentWs = ws as unknown as typeof currentWs;
-
+      currentThreadId = randomUUID();
       const send = (obj: Record<string, unknown>) => ws.send(JSON.stringify(obj));
       send({ type: "status", text: "Connected. Send a query to begin." });
 
@@ -77,6 +79,7 @@ app.get(
       });
 
       // Start queue, auto-stop after 10 minutes
+      taskQueue.setConfigurable({ thread_id: currentThreadId });
       taskQueue.start(30_000, 10 * 60 * 1_000);
 
       // Add a test task
@@ -104,7 +107,10 @@ app.get(
       ws.send(JSON.stringify({ type: "status", text: `Researching: "${q}"` }));
 
       agent
-        .invoke({ messages: [{ role: "user", content: q }] })
+        .invoke(
+          { messages: [{ role: "user", content: q }] },
+          { configurable: { thread_id: currentThreadId } },
+        )
         .then((result) => {
           const last = result.messages[result.messages.length - 1];
           const content = typeof last.content === "string" ? last.content : JSON.stringify(last.content, null, 2);
@@ -120,6 +126,7 @@ app.get(
     onClose(_evt, ws) {
       if (currentWs === (ws as unknown as typeof currentWs)) {
         currentWs = null;
+        currentThreadId = null;
         ((ws as unknown as Record<string, unknown>).__unsub as (() => void) | undefined)?.();
         taskQueue.stop();
       }
