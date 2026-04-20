@@ -121,9 +121,10 @@ const proactivePlannerPrompt = `You are a proactive planner. When invoked, you s
 1. Read /memories/preferences.md to understand the user's current preferences.
 2. Read /memories/proactive_tasks.md to see what proactive tasks already exist.
 3. Compare: are there new preferences in preferences.md that don't have corresponding proactive tasks?
-4. If yes, think whether you can make any proactive tasks to meet the new preferences?
-5. If yes, append a new section to /memories/proactive_tasks.md and list the proactive tasks needed.
-6. If all preferences are already covered, do nothing.
+  - If yes, think whether you can make any proactive tasks to meet the new preferences?
+    - If yes, append a new section to /memories/proactive_tasks.md, use the preference text as heading and list the proactive tasks needed.
+4. If any section in proactive_tasks.md is no longer relevant to the current preferences, remove it.
+5. If all preferences are already covered, do nothing.
 
 Keep task descriptions concise and actionable. The tasks will be executed by a background agent with calendar access.`;
 
@@ -174,7 +175,7 @@ Timezone: Asia/Shanghai
 
 Keep your responses concise. 
 When you perform an action (e.g. create/update/delete an event), briefly confirm what you did.
-When you don't perform any action, return a single word "PASS".`;
+When you don't perform any action, and nothing special to report, return a single word "PASS".`;
 
 export const backgroundAgent = createDeepAgent({
   model,

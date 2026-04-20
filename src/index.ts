@@ -65,7 +65,9 @@ app.get(
           if (result === "Cron auto-stopped after timeout") {
             send({ type: "status", text: "⏱ Proactive cron auto-stopped" });
           } else {
-            send({ type: "result", query: "Proactive Tasks", text: result ?? "" });
+            if (result && result.trim() !== "PASS") {
+              send({ type: "result", query: "Proactive Tasks", text: result ?? "" });
+            }
             send({ type: "status", text: "✔ Proactive tasks completed" });
           }
         } else if (type === "error") {
@@ -73,9 +75,9 @@ app.get(
         }
       });
 
-      // Start cron, auto-stop after 5 minutes
+      // Start cron, auto-stop after 3 minutes
       proactiveCron.setConfigurable({ thread_id: currentThreadId });
-      proactiveCron.start(20_000, 2 * 60 * 1_000);
+      proactiveCron.start(20_000, 3 * 60 * 1_000);
 
       // Store unsub for cleanup
       (ws as unknown as Record<string, unknown>).__unsub = unsub;
