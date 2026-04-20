@@ -1,6 +1,6 @@
 # deep-agents-test
 
-A LangChain Deep Agents project in TypeScript — a personal assistant with planning, research, Google Calendar, and internet search capabilities.
+A LangChain Deep Agents project in TypeScript — a personal assistant with planning, research, Google Calendar, and proactive task capabilities.
 
 ## Prerequisites
 
@@ -30,11 +30,54 @@ Built on [deepagents](https://github.com/langchain-ai/deepagentsjs) (LangChain D
 
 Uses **ZhipuAI GLM-5** via its OpenAI-compatible API. The `ChatOpenAI` adapter from `@langchain/openai` is configured with a custom `baseURL`. Since deepagents internal middleware (summarization, etc.) creates its own OpenAI client, the `OPENAI_API_KEY` and `OPENAI_API_BASE` env vars are mapped from `ZAI_API_KEY` at startup so all internal components use the same provider.
 
+### Three-Agent Architecture
+
+The system uses three specialized agents:
+
+| Agent | Tools | Purpose |
+|---|---|---|
+| **Main agent** | internet_search, Google Calendar CRUD | Handles user conversations, research, and calendar management |
+| **Proactive planner** | None (filesystem only) | Triggered by middleware when preferences change; plans proactive tasks |
+| **Background agent** | Google Calendar CRUD | Executes proactive tasks on a cron schedule |
+
+#### Main Agent
+
+The primary agent users interact with via WebSocket. Has full tool access and a `ProactiveTriggerMiddleware` that detects writes to `preferences.md`.
+
+#### Proactive Planner
+
+A lightweight agent with no external tools. Invoked fire-and-forget by the middleware when the main agent writes to `preferences.md`. It:
+1. Reads `preferences.md` and `proactive_tasks.md`
+2. Checks if new preferences need corresponding proactive tasks
+3. Appends to `proactive_tasks.md` if needed, or removes stale sections
+
+#### Background Agent
+
+Executes tasks listed in `proactive_tasks.md`. Has calendar CRUD tools but no internet search. Returns "PASS" when there are no tasks to execute.
+
+### Proactive Task Flow
+
+```
+User tells agent a preference
+  → Main agent writes to /memories/preferences.md
+  → ProactiveTriggerMiddleware (wrapToolCall) detects the write
+  → Fire-and-forget invoke to proactive planner
+  → Proactive planner updates /memories/proactive_tasks.md
+  → ProactiveCron reads proactive_tasks.md every 20s
+  → If non-empty, invokes background agent to execute tasks
+```
+
 ### Tools
 
 - **`internet_search`** — Web search via Tavily
-- **Google Calendar CRUD** — `list_events`, `create_event`, `update_event`, `delete_event` via `googleapis`
+- **Google Calendar CRUD** — `list_events`, `create_event`, `update_event`, `delete_event` via `googleapis`. Uses `events.patch` (not `update`) to avoid accidental field loss.
 - **Built-in filesystem tools** — Provided by deepagents middleware for reading/writing files
+
+### Middleware
+
+Custom middleware via `createMiddleware`:
+
+- **`ProactiveTriggerMiddleware`** — Uses `wrapToolCall` to intercept `write_file`/`edit_file` calls. When the target is `preferences.md`, it fire-and-forget invokes the proactive planner agent.
 
 ### Backend: CompositeBackend
 
@@ -51,20 +94,23 @@ Two storage backends are composed via `CompositeBackend`:
 
 Two types of memory coexist:
 
-- **Memory files** (`/memories/AGENTS.md`, `/memories/preferences.md`) — Loaded by the memory middleware at session start and injected into the system prompt. The agent can update them via its filesystem tools. Files persist on disk across restarts.
-- **Chat history** — Persisted via `MemorySaver` checkpointer. Each WebSocket connection gets a unique `threadId`; the checkpointer automatically saves/restores conversation state between invokes within the same session.
+- **Memory files** (`/memories/SOUL.md`, `/memories/AGENTS.md`, `/memories/preferences.md`, `/memories/proactive_tasks.md`) — Loaded by the memory middleware at session start and injected into the system prompt. The agent can update them via its filesystem tools. Files persist on disk across restarts.
+- **Chat history** — Persisted via `MemorySaver` checkpointer. Each WebSocket connection gets a unique `threadId`; the checkpointer automatically saves/restores conversation state between invokes within the same session. Main agent and background agent share the same checkpointer and thread ID.
 
 ### Memory File Seeding
 
-`src/memories/` contains template memory files (version-controlled). On first run, if `memories/` doesn't exist, the entire directory is copied from `src/memories/`. On subsequent runs, the existing `memories/` is used (preserving agent-written changes).
+`src/memories/` contains template memory files (version-controlled). On every startup, the entire directory is copied to `memories/` (overwriting existing files). This ensures template updates are always applied.
 
-### Background Task Queue
+### Proactive Cron
 
-A `BackgroundTaskQueue` runs queued tasks on a 30-second interval (1 second for the first tick). It:
+A `ProactiveCron` runs on a periodic interval (20 seconds, 1 second for the first tick). It:
+- Reads `memories/proactive_tasks.md` from disk (not from agent state)
+- If the file has content beyond the heading, invokes the background agent
 - Starts on WebSocket connect, stops on disconnect
-- Auto-stops after 10 minutes
+- Auto-stops after 3 minutes
 - Shares the same `threadId` as the connection so task results appear in the same conversation history
 - Events are forwarded to the browser via WebSocket
+- "PASS" responses from the background agent are silently ignored in the UI
 
 ### WebSocket Server
 
@@ -89,15 +135,17 @@ Uses a **service account** for authentication. The `GOOGLE_CALENDAR_SERVICE_ACCO
 
 ```
 src/
-├── agent.ts              # Agent, model, backend, memory config
-├── background_tasks.ts   # Background task queue with event system
+├── agent.ts              # Three agents, model, backend, memory, middleware config
+├── proactive_cron.ts     # Periodic cron that checks proactive_tasks.md and invokes background agent
 ├── index.ts              # Hono web server + WebSocket handler
-├── memories/             # Template memory files (seeded to memories/ on first run)
+├── memories/             # Template memory files (seeded to memories/ on every startup)
+│   ├── SOUL.md           # Agent identity and personality
 │   ├── AGENTS.md         # Agent behavior & conventions
-│   └── preferences.md   # User preferences
+│   ├── preferences.md    # User preferences
+│   └── proactive_tasks.md # Proactive task definitions
 └── tools/
     └── google_calendar.ts  # Google Calendar CRUD tools
-memories/                  # Runtime memory files (gitignored, persisted to disk)
+memories/                  # Runtime memory files (gitignored, overwritten from src/memories/ on startup)
 public/
     └── ui.html            # Web UI with chat panel + calendar iframe
 ```
@@ -116,5 +164,7 @@ npm run test:integration
 
 - [Deep Agents Overview](https://docs.langchain.com/oss/javascript/deepagents/overview)
 - [Deep Agents Quickstart](https://docs.langchain.com/oss/javascript/deepagents/quickstart)
+- [Deep Agents Subagents](https://docs.langchain.com/oss/javascript/deepagents/subagents)
+- [Deep Agents Custom Middleware](https://docs.langchain.com/oss/javascript/deepagents/customization)
 - [deepagents on npm](https://www.npmjs.com/package/deepagents)
 - [deepagentsjs on GitHub](https://github.com/langchain-ai/deepagentsjs)
