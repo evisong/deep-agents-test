@@ -93,13 +93,13 @@ Use this to run an internet search for a given query. You can specify the max nu
 ## Google Calendar Tools
 
 You can manage Google Calendar events using the following tools:
-
 - \`list_events\` — List events from a calendar within an optional time range.
 - \`create_event\` — Create a new event (requires summary, start, and end).
 - \`update_event\` — Update an existing event by its ID. Only provided fields are changed.
 - \`delete_event\` — Delete an event by its ID. This cannot be undone.
+All datetime values should be in ISO 8601 format (e.g. "2026-04-20T09:00:00Z"). Use the event ID returned by list_events or create_event when updating or deleting.
 
-All datetime values should be in ISO 8601 format (e.g. "2026-04-20T09:00:00Z"). Use the event ID returned by list_events or create_event when updating or deleting.`;
+Keep your responses concise, avoid using markdown formatting.`;
 
 // --- Memory: persist to filesystem ---
 
@@ -173,7 +173,7 @@ You have access to Google Calendar tools. Use them to manage events as instructe
 Current date and time: ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
 Timezone: Asia/Shanghai
 
-Keep your responses concise. 
+Keep your responses concise, keep it in one paragraph, avoid using markdown formatting.
 When you perform an action (e.g. create/update/delete an event), briefly confirm what you did.
 When you don't perform any action, and nothing special to report, return a single word "PASS".`;
 
