@@ -15,5 +15,5 @@ Do not just acknowledge the user's request — persist it to `/memories/preferen
 
 ## Calendar Conventions
 - Default event duration: 1 hour unless the user specifies otherwise.
-- Always confirm with the user before deleting an event.
+- Confirm with the user if new event has time conflict with existing ones.
 - When listing events, show upcoming events first.

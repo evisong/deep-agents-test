@@ -4,8 +4,8 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { agent } from "./agent.js";
-import { BackgroundTaskQueue } from "./background_tasks.js";
+import { agent, backgroundAgent } from "./agent.js";
+import { ProactiveCron } from "./proactive_cron.js";
 import { randomUUID } from "node:crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -21,23 +21,20 @@ app.get("/ui", async (c) => {
 
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 
-// --- Background task queue (for programmatic use) ---
-export const taskQueue = new BackgroundTaskQueue(agent);
+// --- Proactive cron job ---
+export const proactiveCron = new ProactiveCron(backgroundAgent);
 
 // Console logger (always active)
-taskQueue.onEvent(({ type, task, error }) => {
+proactiveCron.onEvent(({ type, result, error }) => {
   switch (type) {
-    case "queued":
-      console.log(`+ Queued: "${task.query}"`);
-      break;
     case "running":
-      console.log(`▶ Running: "${task.query}"`);
+      console.log("▶ Proactive cron: checking tasks...");
       break;
     case "done":
-      console.log(`✔ Done: "${task.query}"`);
+      console.log(`✔ Proactive cron: ${result}`);
       break;
     case "error":
-      console.error(`✘ Error: "${task.query}" — ${error}`);
+      console.error(`✘ Proactive cron error: ${error}`);
       break;
   }
 });
@@ -53,37 +50,32 @@ app.get(
       // Kick previous client
       if (currentWs) {
         try { currentWs.close(); } catch {}
-        taskQueue.stop();
+        proactiveCron.stop();
       }
       currentWs = ws as unknown as typeof currentWs;
       currentThreadId = randomUUID();
       const send = (obj: Record<string, unknown>) => ws.send(JSON.stringify(obj));
       send({ type: "status", text: "Connected. Send a query to begin." });
 
-      // Forward queue events to this client
-      const unsub = taskQueue.onEvent(({ type, task, result, error }) => {
-        if (type === "queued") {
-          send({ type: "status", text: `+ ${result}: "${task.query}"` });
-        } else if (type === "running") {
-          send({ type: "status", text: `▶ Running: "${task.query}"` });
+      // Forward cron events to this client
+      const unsub = proactiveCron.onEvent(({ type, result, error }) => {
+        if (type === "running") {
+          send({ type: "status", text: "▶ Checking proactive tasks..." });
         } else if (type === "done") {
-          if (task.id === 0) {
-            send({ type: "status", text: `⏱ Queue auto-stopped` });
+          if (result === "Cron auto-stopped after timeout") {
+            send({ type: "status", text: "⏱ Proactive cron auto-stopped" });
           } else {
-            send({ type: "result", query: task.query, text: result ?? "" });
-            send({ type: "status", text: `✔ Done: "${task.query}"` });
+            send({ type: "result", query: "Proactive Tasks", text: result ?? "" });
+            send({ type: "status", text: "✔ Proactive tasks completed" });
           }
         } else if (type === "error") {
-          send({ type: "error", query: task.query, text: error ?? "Unknown error" });
+          send({ type: "error", query: "Proactive Tasks", text: error ?? "Unknown error" });
         }
       });
 
-      // Start queue, auto-stop after 10 minutes
-      taskQueue.setConfigurable({ thread_id: currentThreadId });
-      taskQueue.start(30_000, 10 * 60 * 1_000);
-
-      // Add a test task
-      taskQueue.add("Hello");
+      // Start cron, auto-stop after 5 minutes
+      proactiveCron.setConfigurable({ thread_id: currentThreadId });
+      proactiveCron.start(20_000, 2 * 60 * 1_000);
 
       // Store unsub for cleanup
       (ws as unknown as Record<string, unknown>).__unsub = unsub;
@@ -128,7 +120,7 @@ app.get(
         currentWs = null;
         currentThreadId = null;
         ((ws as unknown as Record<string, unknown>).__unsub as (() => void) | undefined)?.();
-        taskQueue.stop();
+        proactiveCron.stop();
       }
     },
     onError(event) {

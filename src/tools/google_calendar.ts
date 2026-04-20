@@ -138,7 +138,7 @@ export const updateEvent = tool(
     if (end !== undefined) body.end = { dateTime: end };
     if (location !== undefined) body.location = location;
 
-    const res = await cal.events.update({
+    const res = await cal.events.patch({
       calendarId,
       eventId,
       requestBody: body,

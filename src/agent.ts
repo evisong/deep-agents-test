@@ -1,4 +1,4 @@
-import { tool } from "langchain";
+import { tool, createMiddleware } from "langchain";
 import { TavilySearch } from "@langchain/tavily";
 import { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
@@ -12,7 +12,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { listEvents, createEvent, updateEvent, deleteEvent } from "./tools/google_calendar.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { existsSync, mkdirSync, cpSync } from "node:fs";
+import { cpSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -83,7 +83,7 @@ export const model = new ChatOpenAI({
 
 const systemPrompt = `You are a helpful assistant with research and calendar management capabilities.
 
-Current date and time: ${new Date().toISOString()}
+Current date and time: ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
 Timezone: Asia/Shanghai
 
 ## \`internet_search\`
@@ -108,12 +108,50 @@ export const checkpointer = new MemorySaver();
 const memoryDir = join(__dirname, "..", "memories");
 const srcMemoriesDir = join(__dirname, "memories");
 
-if (!existsSync(memoryDir)) {
-  cpSync(srcMemoriesDir, memoryDir, { recursive: true });
-}
+cpSync(srcMemoriesDir, memoryDir, { recursive: true, force: true });
 
 const backend = new CompositeBackend(new StateBackend(), {
   "/memories/": new FilesystemBackend({ rootDir: join(__dirname, "..", "memories"), virtualMode: true }),
+});
+
+// --- Proactive Planner Agent (lightweight, no queue) ---
+
+const proactivePlannerPrompt = `You are a proactive planner. When invoked, you should:
+
+1. Read /memories/preferences.md to understand the user's current preferences.
+2. Read /memories/proactive_tasks.md to see what proactive tasks already exist.
+3. Compare: are there new preferences in preferences.md that don't have corresponding proactive tasks?
+4. If yes, think whether you can make any proactive tasks to meet the new preferences?
+5. If yes, append a new section to /memories/proactive_tasks.md and list the proactive tasks needed.
+6. If all preferences are already covered, do nothing.
+
+Keep task descriptions concise and actionable. The tasks will be executed by a background agent with calendar access.`;
+
+const proactivePlanner = createDeepAgent({
+  model,
+  systemPrompt: proactivePlannerPrompt,
+  backend,
+  memory: ["/memories/SOUL.md", "/memories/AGENTS.md", "/memories/preferences.md"],
+});
+
+// --- Proactive trigger middleware ---
+
+const proactiveTriggerMiddleware = createMiddleware({
+  name: "ProactiveTriggerMiddleware",
+  wrapToolCall: async (request, handler) => {
+    const result = await handler(request);
+    const { name, args } = request.toolCall;
+    if (
+      (name === "write_file" || name === "edit_file") &&
+      String(args.file_path).includes("preferences.md")
+    ) {
+      // Fire-and-forget: don't block the main agent's response
+      proactivePlanner.invoke({
+        messages: [{ role: "user", content: "Check for new preferences and update proactive tasks." }],
+      }).catch(() => {});
+    }
+    return result;
+  },
 });
 
 export const agent = createDeepAgent({
@@ -122,5 +160,27 @@ export const agent = createDeepAgent({
   systemPrompt,
   checkpointer,
   backend,
-  memory: ["/memories/AGENTS.md", "/memories/preferences.md"],
+  middleware: [proactiveTriggerMiddleware],
+  memory: ["/memories/SOUL.md", "/memories/AGENTS.md", "/memories/preferences.md"],
+});
+
+// --- Background Task Agent (no search, different system prompt) ---
+
+const backgroundSystemPrompt = `You are a proactive background assistant. You handle scheduled and queued tasks autonomously.
+You have access to Google Calendar tools. Use them to manage events as instructed.
+
+Current date and time: ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
+Timezone: Asia/Shanghai
+
+Keep your responses concise. 
+When you perform an action (e.g. create/update/delete an event), briefly confirm what you did.
+When you don't perform any action, return a single word "PASS".`;
+
+export const backgroundAgent = createDeepAgent({
+  model,
+  tools: [listEvents, createEvent, updateEvent, deleteEvent],
+  systemPrompt: backgroundSystemPrompt,
+  checkpointer,
+  backend,
+  memory: ["/memories/SOUL.md", "/memories/AGENTS.md", "/memories/preferences.md", "/memories/proactive_tasks.md"],
 });
